@@ -1,0 +1,19 @@
+{
+  "name": "authenticated-terminal-gateway",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Per-session signed access gateway for an internal ttyd terminal",
+  "scripts": {
+    "start": "node src/multi-user-gateway.js",
+    "test": "node --test",
+    "test:security": "node --test test/token.test.js test/gateway.test.js",
+    "test:isolation": "node --test test/isolation.test.js",
+    "test:integration": "node --test test/gateway.test.js test/isolation.test.js",
+    "benchmark": "node scripts/benchmark.js",
+    "check": "node --check src/multi-user-gateway.js && node --check src/session-manager.js && node --check src/session-store.js",
+    "package:check": "node scripts/verify-paths.js && node scripts/package-check.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

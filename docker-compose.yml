@@ -1,0 +1,32 @@
+services:
+  terminal-gateway:
+    build: .
+    group_add: ["0"]
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "8080:8080"          # the ONLY published port
+    volumes:
+      - ./logs:/app/logs
+      # Trusted orchestrator only. Never publish this socket or mount it in labs.
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1.0
+    tmpfs: [/tmp]
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8080/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+    networks: [frontend, terminal-internal]
+
+networks:
+  frontend: {}
+  terminal-internal:
+    internal: true
