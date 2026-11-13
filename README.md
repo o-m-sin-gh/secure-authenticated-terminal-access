@@ -2,11 +2,12 @@
 
 # 🔐 Secure, Authenticated Browser-Based Terminal Access
 
-### A session-isolated browser terminal with signed launch credentials, a Node.js gateway, and Docker-backed `ttyd` environments
+**A multi-user browser terminal platform with authenticated dashboards, one-time signed launch links, and isolated Docker terminal containers.**
 
-**Project type:** Cybersecurity / Web Security / Container Isolation  
-**Runtime:** Node.js 22 · Docker · Docker Compose  
-**Status:** Functional prototype with automated tests and local security checks
+![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
+![Security](https://img.shields.io/badge/Focus-Authentication%20%7C%20Isolation-blue)
+![Status](https://img.shields.io/badge/Status-Working%20Prototype-success)
 
 </div>
 
@@ -14,270 +15,263 @@
 
 ## Table of contents
 
-- [1. Overview](#1-overview)
-- [2. Problem statement](#2-problem-statement)
-- [3. Objectives](#3-objectives)
-- [4. Key features](#4-key-features)
-- [5. Technology stack](#5-technology-stack)
-- [6. Architecture](#6-architecture)
-- [7. Authentication and session lifecycle](#7-authentication-and-session-lifecycle)
-- [8. Security controls](#8-security-controls)
-- [9. Project structure](#9-project-structure)
-- [10. Prerequisites](#10-prerequisites)
-- [11. Local setup](#11-local-setup)
-- [12. Configuration reference](#12-configuration-reference)
-- [13. Running the project](#13-running-the-project)
-- [14. Administrative API](#14-administrative-api)
-- [15. Testing and verification](#15-testing-and-verification)
-- [16. Observed test results](#16-observed-test-results)
-- [17. Audit logging](#17-audit-logging)
-- [18. Threat model and design decisions](#18-threat-model-and-design-decisions)
-- [19. Limitations and production-hardening roadmap](#19-limitations-and-production-hardening-roadmap)
-- [20. Troubleshooting](#20-troubleshooting)
-- [21. Responsible use](#21-responsible-use)
+- [Overview](#overview)
+- [Problem statement](#problem-statement)
+- [Features](#features)
+- [Technology stack](#technology-stack)
+- [System architecture](#system-architecture)
+- [How it works](#how-it-works)
+- [Security design](#security-design)
+- [Project structure](#project-structure)
+- [Prerequisites](#prerequisites)
+- [Installation and configuration](#installation-and-configuration)
+- [Running the application](#running-the-application)
+- [Using the dashboards](#using-the-dashboards)
+- [API reference](#api-reference)
+- [Testing and verification](#testing-and-verification)
+- [Configuration reference](#configuration-reference)
+- [Known limitations](#known-limitations)
+- [Future enhancements](#future-enhancements)
+- [Troubleshooting](#troubleshooting)
+- [Responsible use](#responsible-use)
 
 ---
 
-## 1. Overview
+## Overview
 
-### Administrative dashboard
+Secure, Authenticated Browser-Based Terminal Access is a multi-user web application that allows learners to access individual command-line environments through a browser. Instead of exposing every terminal directly to the host network, the application places a trusted Node.js gateway between users and their terminal containers.
 
-The same gateway now serves a protected management console at `http://localhost:8080/admin` (or the configured `PORT`). Create the first administrator before signing in; credentials are stored only as Node.js `scrypt` hashes in the ignored `data/users.json` file:
+The application provides two separate dashboards:
 
-```powershell
-npm run create-admin -- admin "use-a-long-unique-password" "Console Administrator"
-npm start
-```
+- **Administrator dashboard:** create and manage user accounts, create sessions for enabled users, revoke sessions, review audit events, and adjust the launch-token lifetime.
+- **Normal-user dashboard:** sign in, create named terminal sessions, open a browser terminal, view personal session status and expiry, revoke personal sessions, change a password, and log out.
 
-The dashboard uses an HttpOnly, SameSite=Strict administrator cookie plus a per-session CSRF token. It lists and creates users, creates sessions for enabled ordinary users (15/30/60/120 minutes), revokes real sessions through the existing session manager, exposes bounded sanitized audit records, and changes the launch-token lifetime for future tokens (30/60/120 seconds). Existing session and replay state remains in memory; users persist locally. Do not use the `ADMIN_KEY` browser API header as a dashboard credential.
+Each terminal session is backed by its own Docker container running `ttyd`. The gateway owns the session-to-container mapping and checks authorization before proxying terminal HTTP traffic or WebSocket connections.
 
-### Normal-user workflow
+> **Project status:** Working academic prototype. The administrator-to-user workflow and normal-user terminal creation/opening have been manually verified in the local Docker deployment. Automated tests and manual checks provide useful evidence, but this project has not undergone a formal penetration test or production security audit.
 
-Administrators create ordinary users from **Admin → Users**. A normal user signs in at `http://localhost:8080/login`, then uses `http://localhost:8080/dashboard` to create and manage only their own terminal sessions. Session ownership is server-side (`ownerId` is assigned from the authenticated cookie, never from browser input). The dashboard only offers the fixed, hardened terminal environment and approved 15/30/60/120-minute lifetimes. **Open** issues a short-lived, one-time launch URL through the existing signed-token gateway; expiry and revocation still terminate authorization independently of the browser display.
+## Problem statement
 
-Normal-user cookies are HttpOnly and SameSite=Strict; writes require a per-login CSRF token. Changing a password requires the current password and invalidates every normal-user web login. Disabled accounts are rejected during login and on every protected API request. Dashboard authentication state is in memory, so all dashboard logins are invalidated on a gateway restart.
+Browser-based coding labs need to provide convenient shell access without giving every learner a directly exposed terminal service. Directly publishing terminal ports, sharing credentials, or failing to separate user sessions can create security and operational problems.
 
-When using Docker Compose, `./data` is mounted at `/app/data` so the local user store survives gateway restarts. The session store and one-time launch-token replay tracking deliberately remain in memory, as documented elsewhere in this project.
+This project addresses those concerns through a gateway-mediated approach:
 
-Secure, Authenticated Browser-Based Terminal Access is a prototype for providing learners with terminal access directly in a web browser without exposing each terminal as a publicly reachable service or prompting users for a separate native terminal login.
+- Users authenticate through a web dashboard.
+- Administrators control account creation and enablement.
+- Each terminal session receives a separate container.
+- Short-lived, signed launch credentials are redeemed once.
+- The gateway validates access before forwarding HTTP or WebSocket traffic.
+- Session ownership is checked on the server, not trusted from browser input.
+- Session lifecycle events are recorded for review.
 
-A trusted Node.js gateway authenticates each request and routes it to the correct `ttyd` terminal running in its own Docker container. A short-lived, signed launch credential is redeemed once; the gateway then issues an `HttpOnly` session cookie and redirects the browser to a clean URL. The gateway authenticates subsequent HTTP requests and WebSocket upgrades before proxying them to the session's private terminal.
+## Features
 
-The design aims to make lab access convenient while keeping the trust boundary on the gateway and separating terminal containers from the host and from one another.
+### Administrator
 
-> **Project status:** The core flow has been run locally. Automated token, gateway, isolation, and session-expiry tests pass. The security checks documented below are evidence for this prototype, not a claim of a production security certification or a comprehensive penetration test.
+- Dedicated administrator login at `/admin`.
+- Create ordinary user accounts with username, display name, and password.
+- View registered users and enable or disable accounts.
+- Create terminal sessions for enabled users.
+- View session records and revoke sessions.
+- View a bounded list of recent audit events.
+- Change the launch-token lifetime for future launch links.
 
-## 2. Problem statement
+### Normal user
 
-Browser-based lab platforms often need to launch command-line environments with minimal friction. Directly exposing terminal ports or relying on a shared password can create avoidable risks:
+- Dedicated login page at `/login`.
+- Personal dashboard at `/dashboard`.
+- Create named terminal sessions.
+- Select an approved duration: 15, 30, 60, or 120 minutes.
+- Open a session in the browser through a signed launch URL.
+- View personal sessions and their status/expiry.
+- Revoke owned sessions.
+- Change password after verifying the current password.
+- Log out.
 
-- A terminal service may be reachable independently of the lab platform's authentication.
-- Reusable credentials can be copied or shared.
-- Guessable or discoverable terminal ports can become an alternate path to a shell.
-- One learner's terminal may accidentally share state or resources with another learner.
-- Session termination and suspicious access attempts may be difficult to audit.
+### Terminal and gateway
 
-This project explores a gateway-mediated design in which the browser receives a short-lived launch link, the gateway validates it, and each lab session is routed to a private, isolated terminal container.
-
-## 3. Objectives
-
-1. **One-click access:** open a browser terminal from a trusted launch link without a native browser authentication dialog.
-2. **Short-lived launch credentials:** sign launch tokens with HMAC-SHA-256, validate their expiry, and consume each launch token only once.
-3. **Authenticated proxying:** validate HTTP requests and WebSocket upgrades before connecting to a terminal.
-4. **Session isolation:** create a separate Docker terminal container for each session.
-5. **Revocation and expiry:** reject inactive, expired, and revoked sessions and terminate their containers.
-6. **Auditability:** record security-relevant outcomes in JSON Lines format without intentionally logging raw token values.
-7. **Container hardening:** avoid published terminal ports, use a non-root terminal user, remove Linux capabilities, use a read-only root filesystem, and apply resource limits.
-8. **Testability:** exercise token validation, one-time redemption, isolation behavior, and session expiry with repeatable automated tests.
-
-## 4. Key features
-
+- One Docker terminal container per session.
+- Browser terminal powered by `ttyd`.
 - HMAC-SHA-256 signed launch and session tokens.
-- Random token identifier (`jti`) to support one-time launch redemption.
-- Short-lived launch URL followed by a clean redirect.
-- `HttpOnly` and `SameSite=Strict` session cookie.
-- Authentication checks on HTTP requests and WebSocket upgrades.
-- Per-session `ttyd` Docker container.
-- Internal Docker network for terminal containers.
-- No host-published ports for individual terminal containers.
-- Container restrictions: non-root UID/GID, read-only root filesystem, dropped capabilities, `no-new-privileges`, PID/memory/CPU limits, and a restricted `/tmp` tmpfs.
-- Session status tracking and explicit revocation.
-- JSONL audit events with timestamps and token fingerprints.
-- Automated tests using Node.js's built-in test runner.
+- One-time launch-token redemption to prevent replay.
+- Authentication for HTTP requests and WebSocket upgrades.
+- Session expiry and revocation checks.
+- JSON Lines audit logging.
+- Gateway health endpoint at `/healthz`.
 
-## 5. Technology stack
+## Technology stack
 
-| Technology | Role |
+| Technology | Purpose |
 |---|---|
-| **Node.js** | Gateway, token validation, session orchestration, HTTP/WebSocket proxying |
-| **JavaScript (CommonJS)** | Application and test implementation |
-| **Docker Engine API** | Creates, starts, inspects, stops, and removes terminal containers |
-| **Docker Compose** | Defines gateway deployment, networks, volumes, health check, and resource limits |
-| **`ttyd`** | Exposes a shell through a browser-compatible terminal protocol |
-| **HMAC-SHA-256** | Signs and verifies terminal tokens |
-| **Node.js `crypto`** | Random UUIDs, HMAC, SHA-256 fingerprints, timing-safe signature comparison |
-| **Node.js `node:test`** | Automated unit and integration-style tests |
-| **PowerShell** | Local setup and verification on Windows |
-| **JSON Lines (JSONL)** | Append-only structured audit-event format |
+| Node.js | HTTP gateway, authentication, APIs, proxying, and session orchestration |
+| JavaScript (CommonJS) | Application implementation |
+| Docker Engine API | Create, start, inspect, stop, and remove terminal containers |
+| Docker Compose | Run the gateway and define networks, volumes, and limits |
+| `ttyd` | Provide browser-accessible terminal sessions |
+| HTML, CSS, JavaScript | Administrator and normal-user dashboards |
+| HMAC-SHA-256 | Sign and verify terminal access tokens |
+| Node.js `crypto` | Password hashing support, random identifiers, token signatures, and comparisons |
+| JSON | Local user account store |
+| JSON Lines (JSONL) | Structured audit log |
+| Node.js built-in test runner | Automated tests |
 
-The project uses Node.js built-in modules for its application and test code. Docker Desktop is required for the real container-backed flow.
+User passwords are stored as salted `scrypt` hashes by the user store. Plain-text passwords are not stored in `data/users.json`.
 
-## 6. Architecture
-
-### High-level component diagram
+## System architecture
 
 ```mermaid
 flowchart TD
-    A[Trusted lab platform / orchestrator] -->|Short-lived signed launch URL| B[Browser]
-    B -->|Launch request with token| C[Node.js authentication gateway]
-    C -->|Verify signature, expiry, session and one-time use| D[Session store]
-    C -->|Audit event| E[(JSONL audit log)]
-    C -->|Set HttpOnly cookie + clean redirect| B
-    B -->|Authenticated HTTP and WebSocket requests| C
-    C -->|Resolve trusted session-to-container mapping| D
-    C -->|Private network proxy| F[ttyd container: Session A]
-    C -->|Private network proxy| G[ttyd container: Session B]
-    F --- H[(Internal Docker network)]
-    G --- H
-    C --- H
+    A[Administrator] --> B[Administrator Dashboard]
+    U[Normal User] --> C[User Login and Dashboard]
+    B --> D[Node.js Gateway and Authentication]
+    C --> D
+    D --> E[User Store]
+    D --> F[Session Manager]
+    D --> G[Audit Logger]
+    F --> H[Docker Engine API]
+    H --> I[Terminal Container A]
+    H --> J[Terminal Container B]
+    H --> K[Terminal Container N]
+    C -->|Signed launch URL| D
+    D -->|Authenticated HTTP and WebSocket proxy| I
+    D -->|Authenticated HTTP and WebSocket proxy| J
 ```
 
-### Network and trust boundaries
+### Network layout
 
 ```text
-Host / Docker Engine
-│
-├── Published host port: 8080
-│   └── terminal-gateway (trusted component)
-│       ├── authentication and token validation
-│       ├── session-to-container mapping
-│       ├── audit writer
-│       └── Docker Engine API access
-│
-├── frontend Docker network
-│   └── gateway
-│
-└── terminal-internal Docker network (internal)
-    ├── gateway
-    ├── terminal container A (ttyd on container port 7681)
-    ├── terminal container B (ttyd on container port 7681)
-    └── terminal container N ...
+Browser
+   |
+   | HTTP :8080
+   v
+Node.js terminal-gateway
+   |        |             |
+   |        |             +--> Local user store (./data)
+   |        +----------------> Audit log (./logs)
+   |
+   +--> Docker Engine API
+           |
+           +--> terminal container A (ttyd :7681)
+           +--> terminal container B (ttyd :7681)
+           +--> terminal container N (ttyd :7681)
+
+Gateway and terminal containers communicate through
+the Docker terminal-internal network.
+Only the gateway port is published to the host.
 ```
 
-Only the gateway's port is published to the host. A terminal's `7681/tcp` declaration is an internal container port, not a host port mapping. The gateway stores the trusted session-to-container target; browser-supplied data does not choose the container image, command, host, port, or Docker settings.
+The Docker Compose configuration publishes port `8080` for the gateway. Individual terminal containers do not receive host port bindings. The gateway connects to them over the internal Docker network.
 
-### Request flow
+## How it works
 
-1. The trusted orchestrator creates a lab session and asks the gateway to create its terminal container.
-2. The gateway returns a URL containing a short-lived signed launch token.
-3. The browser requests that URL.
-4. The gateway verifies the token signature, type, expiry, session status, and one-time-use identifier.
-5. If valid, the gateway issues a session cookie and redirects to the same path without the launch token in the URL.
-6. The browser requests terminal assets and opens its WebSocket connection using the cookie.
-7. The gateway validates each request and proxies it to the terminal's private address.
-8. On revocation or expiry, the gateway denies further authorization and terminates the container; tracked WebSocket connections are closed during explicit termination.
+### 1. Administrator creates a user
 
-## 7. Authentication and session lifecycle
+The administrator signs in and creates a normal user account. The account is stored locally with a salted password hash. The administrator can later enable or disable the account.
 
-### Token design
+### 2. User signs in
 
-The token payload contains fields including:
+The user signs in through `/login`. The gateway checks the account credentials and enabled status, then issues an HttpOnly, SameSite=Strict authentication cookie and a CSRF token for write operations.
 
-- `sid`: session identifier.
-- `typ`: token type (`launch` or `session`).
-- `exp`: token expiration time in Unix seconds.
-- `jti`: random token identifier used for one-time launch redemption.
-- `lab`: lab expiry value carried by the launch token.
+### 3. User creates a terminal session
 
-The payload is Base64URL-encoded and signed with HMAC-SHA-256. Signature comparison uses a timing-safe comparison. A SHA-256 fingerprint, truncated to 16 hexadecimal characters, is used for audit correlation instead of intentionally logging the raw token.
+The user selects a session name and an approved duration. The gateway creates a session record and asks the session manager to create a dedicated Docker container. The session owner is assigned by the server from the authenticated user account.
 
-### Launch token versus session cookie
+### 4. Gateway creates a launch URL
 
-| Credential | Purpose | Lifetime / behavior |
-|---|---|---|
-| Launch token | Redeem a trusted launch link | Short-lived (60 seconds in the token URL helper) and single-use |
-| Session cookie | Authorize subsequent terminal HTTP and WebSocket requests | Bounded by the remaining lab-session lifetime |
-| Admin key | Protect session-management endpoints | Long random secret supplied through environment configuration |
+The gateway creates a short-lived signed launch token. The token contains the session identity, expiry, and a random token identifier. The browser uses the launch URL to open the terminal.
 
-The cookie is configured as `HttpOnly` and `SameSite=Strict`. The `Secure` attribute is controlled by configuration. For local HTTP development it may be disabled; production deployment should use HTTPS and secure cookies.
+### 5. Token is redeemed
 
-### Session states
+The gateway validates the signature, token type, expiry, and session state. It consumes the launch identifier once, then redirects the browser to a clean URL and issues an HttpOnly terminal-session cookie.
 
-The in-memory store uses states such as:
+### 6. Terminal traffic is proxied
 
-- `creating`
-- `active`
-- `failed`
-- `revoked`
-- `expired`
+The browser sends authenticated HTTP requests and WebSocket upgrades to the gateway. The gateway validates the session and forwards allowed traffic to the private `ttyd` container.
 
-The store checks the expiry time before authorizing a session. Expired sessions are marked `expired` and denied. Revocation transitions an active or creating session to the requested termination reason and records a termination timestamp.
+### 7. Session ends
 
-## 8. Security controls
+A session can become unavailable through expiry or explicit revocation. The session manager stops and removes its Docker container. The gateway also closes tracked live WebSocket connections when a session is terminated.
 
-| Control | Implementation intent |
+## Security design
+
+| Control | Implementation |
 |---|---|
-| Signed launch credentials | HMAC-SHA-256 signature validation |
-| Token expiry | `exp` validation; session expiry checked separately |
-| Replay prevention | A consumed launch `jti` cannot be redeemed again within the in-memory store's lifetime |
-| Cookie protection | `HttpOnly`, `SameSite=Strict`; `Secure` in HTTPS deployments |
-| HTTP authentication | Gateway validates the request before proxying |
-| WebSocket authentication | Upgrade handler validates session credentials and origin before upstream connection |
-| Private terminal access | Terminal containers use the internal Docker network |
-| No direct host terminal ports | Container `PortBindings` are empty |
-| Container privilege reduction | Non-root `1000:1000`, `CapDrop: ALL`, `no-new-privileges:true` |
-| Filesystem restriction | Terminal root filesystem is read-only |
-| Resource constraints | Terminal defaults: 256 MiB memory, 0.5 CPU, 128 PIDs; `/tmp` uses a 64 MiB `noexec,nosuid` tmpfs |
-| Gateway container hardening | Compose configuration sets read-only root filesystem, drops capabilities, limits resources, and uses a health check |
-| Audit trail | JSONL records for accepted/rejected requests, session creation, and termination |
-| Rate limiting | Repeated authentication failures are limited per remote IP in the gateway process |
+| Password storage | Salted `scrypt` password hashes |
+| Administrator and user authentication | Separate dashboard cookies and server-side session maps |
+| Cookie protection | HttpOnly and SameSite=Strict; Secure attribute is configurable |
+| CSRF protection | Write requests require the per-login CSRF token |
+| Account status | Disabled users are rejected at login and on protected user API requests |
+| User session ownership | Server assigns `ownerId`; users can list/revoke only their own sessions |
+| Launch credentials | HMAC-SHA-256 signed tokens with expiry |
+| Replay prevention | Launch token identifier can be consumed only once while stored in the gateway process |
+| HTTP authorization | Gateway authenticates before proxying terminal requests |
+| WebSocket authorization | Gateway validates credentials and allowed Origin before connecting upstream |
+| Network exposure | Only gateway port is published; terminal ports remain internal |
+| Container user | Terminal runs as UID/GID `1000:1000` |
+| Container privileges | Capabilities dropped; `no-new-privileges` enabled |
+| Filesystem | Terminal root filesystem is read-only |
+| Resource limits | Terminal defaults: 256 MiB memory, 0.5 CPU, 128 PIDs |
+| Temporary storage | `/tmp` uses a 64 MiB `noexec,nosuid` tmpfs |
+| Audit | Structured JSONL events for authentication and session lifecycle actions |
 
-These controls reduce risk but do not eliminate it. In particular, Docker socket access is highly privileged and must be treated as host-level administrative access.
+### Important trust boundary
 
-## 9. Project structure
+The gateway mounts the Docker socket so it can create and manage terminal containers. Access to the Docker socket is highly privileged and can effectively provide control over the host. The socket must remain available only to the trusted gateway component and must never be mounted into learner terminal containers.
+
+The Compose file currently includes `group_add: ["0"]` for the local Docker Desktop environment. Treat this as a development workaround, not a production security recommendation.
+
+## Project structure
 
 ```text
 Secure, Authenticated Terminal Access/
 ├── src/
-│   ├── multi-user-gateway.js   # Main multi-user auth gateway and proxy
-│   ├── gateway.js              # Earlier/single-gateway implementation
-│   ├── session-manager.js      # Docker container lifecycle and limits
-│   ├── session-store.js        # In-memory session/replay state
-│   ├── docker-client.js        # Docker Engine API client
-│   └── token.js                # HMAC token creation, verification, URL helper
-├── test/
-│   ├── token.test.js           # Token signing, expiry and type validation
-│   ├── gateway.test.js         # Launch redemption and gateway behavior
-│   ├── isolation.test.js       # Separate sessions and revocation behavior
-│   └── session-expiry.test.js  # Expired-session store behavior
+│   ├── multi-user-gateway.js   # Main gateway, dashboard APIs, auth and proxy
+│   ├── gateway.js              # Earlier gateway implementation
+│   ├── admin-store.js           # Local user store and password hashing
+│   ├── session-manager.js       # Docker terminal lifecycle
+│   ├── session-store.js         # In-memory session and replay state
+│   ├── docker-client.js         # Docker Engine API client
+│   └── token.js                 # Token signing, verification and URL helpers
+├── public/
+│   ├── admin.html               # Administrator dashboard
+│   ├── admin.js
+│   ├── admin.css
+│   ├── user.html                # Normal-user login/dashboard
+│   └── user.js
 ├── scripts/
-│   ├── benchmark.js            # Lightweight benchmark utility
-│   ├── verify-paths.js         # Required-file and npm-script path checks
-│   ├── package-check.js        # Rejects local .env files in a package tree
-│   └── package-project.ps1     # Packaging helper for Windows
+│   ├── create-admin.js          # Create the initial administrator
+│   ├── benchmark.js
+│   ├── package-check.js
+│   ├── package-project.ps1
+│   └── verify-paths.js
+├── test/
+│   ├── admin-store.test.js
+│   ├── gateway.test.js
+│   ├── isolation.test.js
+│   ├── session-expiry.test.js
+│   └── token.test.js
 ├── docs/
-│   └── design.md               # Design notes and acceptance checks
-├── logs/                       # Local JSONL audit output (do not submit live logs)
-├── Dockerfile                  # Gateway image definition
-├── docker-compose.yml          # Gateway, networks, volumes, health check
-├── .env.example                # Safe configuration template
-├── .gitignore                  # Ignores local secrets, logs, and node_modules
-├── package.json                # Scripts and Node.js engine requirement
+│   └── design.md
+├── data/                        # Local user database; do not publish
+├── logs/                        # Local audit logs; do not publish
+├── .env                         # Local secrets; do not publish
+├── .env.example                 # Safe configuration template
+├── Dockerfile
+├── docker-compose.yml
+├── package.json
 └── README.md
 ```
 
-> The tree above describes the intended/current working project layout. Keep `test/session-expiry.test.js` in the final project because it was added during verification. Do not package local `.env`, live logs, or `node_modules`.
-
-## 10. Prerequisites
+## Prerequisites
 
 - Windows 10/11, macOS, or Linux.
-- Node.js **20 or newer** (the project was tested locally with Node.js `v22.15.0`).
-- Docker Desktop on Windows/macOS, or Docker Engine on Linux.
-- Docker Compose v2 (`docker compose` command).
-- A terminal with permission to access Docker.
-- The configured terminal image available locally or downloadable by Docker.
+- Node.js 20 or newer.
+- npm.
+- Docker Desktop (Windows/macOS) or Docker Engine (Linux).
+- Docker Compose v2.
+- Docker Engine running before starting the application.
 
-Check the installed tools:
+Verify the tools:
 
 ```powershell
 node --version
@@ -287,455 +281,330 @@ docker compose version
 docker info
 ```
 
-On Windows, start Docker Desktop and wait until the Docker engine is running before starting the project.
+On Windows, start Docker Desktop and wait until the engine is ready.
 
-## 11. Local setup
+## Installation and configuration
 
-### 11.1 Obtain the project
+### 1. Extract the project
 
-Extract the project archive into a working directory, for example:
+Extract the project folder and open PowerShell in that directory.
 
-```text
-C:\Users\<your-user>\Projects\Secure, Authenticated Terminal Access
-```
-
-Open PowerShell in that directory.
-
-### 11.2 Create local configuration
-
-Copy the example file:
+### 2. Create the environment file
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Generate two different random secrets. Run the following command twice and use one output for each secret:
+Generate two different random secrets:
 
 ```powershell
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-Edit `.env` and replace the placeholder values for:
+Run the command twice. Put one value in `TERMINAL_TOKEN_SECRET` and the other in `ADMIN_KEY` in `.env`. Each secret must be at least 32 characters. Do not use the same value for both.
 
-- `TERMINAL_TOKEN_SECRET`
-- `ADMIN_KEY`
+### 3. Check the terminal network name
 
-Do not use the same value for both. Do not share `.env`, commit it, or include it in a submission archive.
-
-### 11.3 Configure the Docker network
-
-The Compose-created internal network is normally named `<compose-project>_terminal-internal`. The `TERMINAL_NETWORK` value in `.env` must match the actual network name used by Docker Compose.
-
-Check the network name with:
-
-```powershell
-docker network ls
-```
-
-For the project folder name used in local verification, the network was:
+The `TERMINAL_NETWORK` value must match the Docker Compose network name. The default example is:
 
 ```text
 secureauthenticatedterminalaccess_terminal-internal
 ```
 
-If the Compose project name changes, update the setting to match the newly created network.
+If Docker Compose uses a different project name, inspect the actual network:
 
-### 11.4 Start the gateway
+```powershell
+docker network ls
+```
+
+Update `TERMINAL_NETWORK` in `.env` if required.
+
+### 4. Create the first administrator
+
+The user store is persisted in `data/users.json`. Create an administrator from PowerShell:
+
+```powershell
+npm run create-admin -- admin "replace-this-with-a-long-unique-password" "Console Administrator"
+```
+
+Use a unique password of at least 12 characters. Replace the example password before running the command. Do not put real credentials in source control, screenshots, or documentation.
+
+The command creates the administrator account. It does not start the gateway.
+
+## Running the application
+
+Build and start the gateway:
 
 ```powershell
 docker compose up -d --build
+```
+
+Check container status:
+
+```powershell
 docker compose ps
-docker compose logs --tail 100 terminal-gateway
 ```
 
-Check the health endpoint:
-
-```powershell
-Invoke-WebRequest -Uri http://localhost:8080/healthz
-```
-
-A healthy response should return HTTP 200 and `ok`.
-
-### Local Docker socket note
-
-The gateway needs Docker Engine API access to create terminal containers. On the local Windows Docker Desktop setup, socket/permission behavior may require environment-specific configuration. A local development workaround such as adding the gateway to a highly privileged group is **not** a production security recommendation. Never expose the Docker socket to learner containers.
-
-## 12. Configuration reference
-
-The values below are a reference. Use the actual `.env.example` distributed with your project as the starting point and replace all secret placeholders.
-
-| Variable | Purpose | Typical local value / default |
-|---|---|---|
-| `PORT` | Gateway HTTP port | `8080` |
-| `ADMIN_PORT` | Legacy/alternate gateway configuration setting | `9090` |
-| `TERMINAL_TOKEN_SECRET` | HMAC signing secret | Random secret, at least 32 characters |
-| `ADMIN_KEY` | Admin API authentication key | Different random secret, at least 32 characters |
-| `SESSION_TTL_SECONDS` | Lab session lifetime | `3600` |
-| `LAUNCH_TTL_SECONDS` | Launch-token lifetime setting | `60` |
-| `MAX_ACTIVE_SESSIONS` | Maximum active sessions in one gateway process | `10` |
-| `TERMINAL_IMAGE` | Docker image for `ttyd` | `tsl0922/ttyd:1.7.7` |
-| `TERMINAL_NETWORK` | Private network used by terminal containers | Compose-created `terminal-internal` network |
-| `TERMINAL_COMMAND` | Command passed to the terminal container | `ttyd -W --max-clients 1 bash` |
-| `AUDIT_LOG_PATH` | JSONL audit log location | `./logs/terminal-access.jsonl` |
-| `DOCKER_SOCKET` | Docker Engine socket path | `/var/run/docker.sock` in the container |
-| `ALLOWED_ORIGINS` | Allowed browser origin(s), comma-separated | `http://localhost:8080` |
-| `COOKIE_SECURE` | Whether to set the cookie `Secure` attribute | `false` for local HTTP only; `true` with HTTPS |
-| `FRAME_ANCESTORS` | CSP `frame-ancestors` value | `'self'` |
-| `TTYD_HOST` / `TTYD_PORT` | Settings used by the alternate gateway implementation | `127.0.0.1` / `7681` |
-
-**Important:** The multi-user gateway currently uses `SESSION_TTL_SECONDS`, `LAUNCH_TTL_SECONDS`, `MAX_ACTIVE_SESSIONS`, `TERMINAL_IMAGE`, `TERMINAL_NETWORK`, and `TERMINAL_COMMAND` directly. Some settings listed above are also used by the alternate `src/gateway.js` implementation or are legacy configuration. Verify configuration use in the selected entry point before relying on a setting in deployment.
-
-## 13. Running the project
-
-### Start
-
-```powershell
-docker compose up -d --build
-```
-
-### View gateway logs
+View gateway logs:
 
 ```powershell
 docker compose logs -f terminal-gateway
 ```
 
-### View running containers
+Check the health endpoint:
 
 ```powershell
-docker ps --format "table {{.Names}}\t{{.Ports}}\t{{.Networks}}"
+Invoke-WebRequest http://localhost:8080/healthz
 ```
 
-Expected topology: the gateway publishes port `8080`; terminal containers show their internal terminal port (typically `7681/tcp`) but no host port mapping.
+A healthy response returns HTTP 200 with `ok`.
 
-### Stop the gateway stack
+### Dashboard URLs
+
+| Area | URL |
+|---|---|
+| Administrator login/dashboard | `http://localhost:8080/admin` |
+| Normal-user login | `http://localhost:8080/login` |
+| Normal-user dashboard | `http://localhost:8080/dashboard` |
+| Health check | `http://localhost:8080/healthz` |
+
+### Stop the application
 
 ```powershell
 docker compose down
 ```
 
-This stops the Compose-managed gateway. Depending on the lifecycle and state of separately created terminal containers, verify and clean up remaining project-managed containers before shutting down or deleting the working directory.
+This stops and removes the Compose-managed gateway container and network. The bind-mounted `data` and `logs` directories remain on the host. Terminal containers are created separately through the Docker Engine API, so after stopping the gateway, inspect for any remaining project-managed terminal containers before assuming every session container has been removed.
 
-## 14. Administrative API
-
-The multi-user gateway protects `/admin/` endpoints with the `x-admin-key` HTTP header.
-
-| Method | Path | Purpose | Expected behavior |
-|---|---|---|---|
-| `POST` | `/admin/sessions` | Create a terminal session | Returns HTTP 201 with a session ID and launch URL |
-| `GET` | `/admin/sessions/{uuid}` | Read session status | Returns the stored session record or HTTP 404 if unknown |
-| `DELETE` | `/admin/sessions/{uuid}` | Revoke/terminate a session | Returns HTTP 204 on successful termination |
-| `GET` | `/healthz` | Health check | Returns `ok` |
-
-Example PowerShell session creation (do not print or share the launch URL):
+To start it again:
 
 ```powershell
-# Load ADMIN_KEY from the local .env file without displaying it.
-$adminLine = Get-Content .env |
-  Where-Object { $_ -match '^ADMIN_KEY=' } |
-  Select-Object -First 1
-
-if (-not $adminLine) { throw "ADMIN_KEY not found in .env" }
-
-$adminKey = $adminLine.Substring('ADMIN_KEY='.Length).Trim().Trim('"').Trim("'")
-$headers = @{ 'x-admin-key' = $adminKey }
-
-$session = Invoke-RestMethod `
-  -Method Post `
-  -Uri 'http://localhost:8080/admin/sessions' `
-  -Headers $headers
-
-# Open the launch URL directly without printing it to the console.
-Start-Process $session.launchUrl
+docker compose up -d
 ```
 
-Example revocation using a known test session ID:
+Use `docker compose up -d --build` after changing application code or the Dockerfile.
 
-```powershell
-Invoke-WebRequest `
-  -Method Delete `
-  -Uri "http://localhost:8080/admin/sessions/<SESSION-UUID>" `
-  -Headers $headers
-```
+> Do not run `npm start` at the same time as the Docker Compose gateway when both are configured to use port 8080. The port can only be bound by one process at a time.
 
-Replace `<SESSION-UUID>` with the ID returned when creating the test session. Treat the admin key and launch URL as credentials. Do not include them in screenshots, reports, or logs.
+## Using the dashboards
 
-## 15. Testing and verification
+### Administrator workflow
 
-The project uses the built-in Node.js test runner. No separate test framework is required.
+1. Open `http://localhost:8080/admin`.
+2. Sign in with the administrator account created during setup.
+3. Open the Users section and create a normal user.
+4. Enable or disable user accounts as required.
+5. Review sessions and security events.
+6. Revoke a session when access should end.
 
-### Run all automated tests
+### Normal-user workflow
+
+1. The administrator creates and enables the account.
+2. Open `http://localhost:8080/login`.
+3. Sign in using the assigned username and password.
+4. Open the dashboard at `/dashboard`.
+5. Create a named terminal session and select 15, 30, 60, or 120 minutes.
+6. Select Open to launch the browser terminal.
+7. Return to the dashboard to view or revoke personal sessions.
+8. Use the password-change option to update the account password.
+
+A normal user should only be able to view and revoke sessions owned by that account. The gateway enforces this using the authenticated account's server-side user ID.
+
+## API reference
+
+The browser dashboards use the following application routes. Dashboard write requests require the relevant authenticated cookie and CSRF token.
+
+### Normal-user API
+
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/api/auth/login` | Authenticate a normal user |
+| `POST` | `/api/auth/logout` | End the current normal-user login |
+| `GET` | `/api/user/me` | Get the current user |
+| `GET` | `/api/user/sessions` | List the current user's sessions |
+| `POST` | `/api/user/sessions` | Create a personal terminal session |
+| `DELETE` | `/api/user/sessions/{uuid}` | Revoke an owned session |
+| `PATCH` | `/api/user/password` | Change the current user's password |
+
+### Administrator dashboard API
+
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/api/admin/login` | Authenticate an administrator |
+| `POST` | `/api/admin/logout` | End the administrator login |
+| `GET` | `/api/admin/me` | Get the current administrator |
+| `GET` | `/api/admin/overview` | Get dashboard counts and recent activity |
+| `GET` | `/api/admin/users` | List users |
+| `POST` | `/api/admin/users` | Create a user |
+| `PATCH` | `/api/admin/users/{uuid}` | Update supported user fields, including enabled status |
+| `GET` | `/api/admin/sessions` | List sessions |
+| `POST` | `/api/admin/sessions` | Create a session for an enabled user |
+| `DELETE` | `/api/admin/sessions/{uuid}` | Revoke a session |
+| `GET` | `/api/admin/audit-logs` | Read recent audit events |
+| `GET` | `/api/admin/settings` | Read runtime settings |
+| `PATCH` | `/api/admin/settings` | Update launch-token lifetime |
+
+### Gateway/admin-key API
+
+The gateway also contains a separate `/admin/` API protected by the `x-admin-key` header:
+
+| Method | Route | Purpose |
+|---|---|---|
+| `POST` | `/admin/sessions` | Create a terminal session |
+| `GET` | `/admin/sessions/{uuid}` | Read a session record |
+| `DELETE` | `/admin/sessions/{uuid}` | Revoke a session |
+| `GET` | `/healthz` | Health check |
+
+The `ADMIN_KEY` is not the administrator dashboard password. Keep it secret and do not expose it to normal users or place it in frontend code.
+
+## Testing and verification
+
+Run commands from the project directory.
+
+### Automated tests
 
 ```powershell
 npm test
 ```
 
-### Run token and gateway security tests
+Run focused test groups:
 
 ```powershell
 npm run test:security
-```
-
-### Run isolation test
-
-```powershell
 npm run test:isolation
-```
-
-### Run gateway and isolation integration tests
-
-```powershell
 npm run test:integration
 ```
 
-### Check JavaScript syntax
+Check JavaScript syntax:
 
 ```powershell
 npm run check
 ```
 
-### Check project paths and packaging exclusions
+Check packaging paths and secret exclusions:
 
 ```powershell
 npm run package:check
 ```
 
-The package check intentionally fails if it finds `.env` or `.env.local` in the directory being checked. Run it from a clean submission copy that excludes local secrets, logs, and `node_modules`. Do not remove the safeguard just to make the check pass.
+The package check is expected to reject a project tree containing `.env` or `.env.local`. Run it against a clean submission copy that excludes secrets, live logs, and `node_modules`. Do not disable this safeguard to make packaging pass.
 
-### Manual security checks performed during local verification
+### Manual verification checklist
 
-The following checks were performed against the local Docker deployment:
+- [x] Administrator can create a normal user.
+- [x] A created normal user can log in.
+- [x] A normal user can create and open their own browser terminal.
+- [ ] Two users cannot view or revoke each other's sessions.
+- [ ] A disabled user is rejected by login and protected user APIs.
+- [ ] A normal-user cookie cannot access administrator APIs.
+- [ ] Password change rejects an incorrect current password and invalidates existing user logins.
+- [ ] Revoked and expired sessions cannot be reused.
+- [ ] Corresponding Docker containers are stopped and removed after termination.
 
-1. A request to `http://localhost:8080/` without credentials returned **HTTP 401**.
-2. A WebSocket upgrade request without a session cookie or launch token returned **HTTP 401**.
-3. `docker ps` showed the gateway publishing `8080`, while the observed terminal containers had no host port mappings and were attached to the internal terminal network.
-4. A revoked session returned HTTP 204 from the DELETE endpoint, its record subsequently showed `status: revoked`, and the corresponding container ID was no longer listed by `docker ps -a`.
-5. The JSONL log contained events such as `missing-token`, `accepted-websocket`, `replayed-token`, `revoked-session`, `session-created`, and `session-terminated`.
-6. A DNS lookup from a temporary container on the internal network returned `SERVFAIL`. This is a limited observation, not proof that every form of outbound traffic is blocked.
-7. The terminal container inspected during verification used user `1000:1000`, a read-only root filesystem, dropped capabilities, `no-new-privileges`, no mounts, no published ports, and resource limits.
+The first three items were manually confirmed in the local deployment. Complete the remaining checks before presenting the security properties as fully verified.
 
-## 16. Observed test results
+### Test-scope note
 
-The following results were observed during local development after adding `test/session-expiry.test.js`.
+Automated tests exercise token handling, gateway behavior, session-store expiry, user-store behavior, and simulated isolation paths. Tests that use simulated upstream servers do not, by themselves, prove isolation between multiple real Docker containers. A simulated-clock expiry test does not replace a live Docker-backed expiry test. Record the exact output from the current machine when reporting test results.
 
-### Complete test suite
+## Configuration reference
 
-```text
-✔ launch token is consumed once and redirected without a token
-✔ two sessions remain isolated and revoking A preserves B
-✔ expired sessions are denied and marked expired
-✔ issues and verifies a session token
-✔ rejects expired, modified and absent tokens
-✔ rejects wrong token type
-ℹ tests 6
-ℹ pass 6
-ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-```
+Use `.env.example` as the source of truth for available variables. The main multi-user gateway reads these settings:
 
-### Security tests
+| Variable | Purpose | Example |
+|---|---|---|
+| `PORT` | Gateway HTTP port | `8080` |
+| `TERMINAL_TOKEN_SECRET` | HMAC signing secret, minimum 32 characters | Random 64-character hex value |
+| `ADMIN_KEY` | Separate admin API key, minimum 32 characters | Different random value |
+| `SESSION_TTL_SECONDS` | Default terminal session duration | `3600` |
+| `LAUNCH_TTL_SECONDS` | Default launch-token lifetime | `60` |
+| `MAX_ACTIVE_SESSIONS` | Maximum active sessions in this gateway process | `10` |
+| `TERMINAL_IMAGE` | Docker image used for terminal containers | `tsl0922/ttyd:1.7.7` |
+| `TERMINAL_NETWORK` | Internal Docker network name | Compose network name |
+| `TERMINAL_COMMAND` | Command run inside the terminal container | `ttyd -W --max-clients 1 bash` |
+| `AUDIT_LOG_PATH` | Audit log file | `logs/terminal-access.jsonl` |
+| `USER_STORE_PATH` | User database file | `data/users.json` |
+| `DOCKER_SOCKET` | Docker Engine socket inside gateway | `/var/run/docker.sock` |
+| `ALLOWED_ORIGINS` | Allowed browser origin(s) | `http://localhost:8080` |
+| `COOKIE_SECURE` | Whether dashboard cookies use Secure | `false` for local HTTP |
+| `FRAME_ANCESTORS` | Content Security Policy frame-ancestors value | `'self'` |
 
-```text
-✔ launch token is consumed once and redirected without a token
-✔ issues and verifies a session token
-✔ rejects expired, modified and absent tokens
-✔ rejects wrong token type
-ℹ tests 4
-ℹ pass 4
-ℹ fail 0
-```
+For local HTTP development, `COOKIE_SECURE=false` is used in the example configuration. A real deployment should use HTTPS and secure cookies. The runtime settings page can change the launch-token lifetime for subsequently generated launch URLs.
 
-### Isolation test
+## Known limitations
 
-```text
-✔ two sessions remain isolated and revoking A preserves B
-ℹ tests 1
-ℹ pass 1
-ℹ fail 0
-```
+This is an academic prototype and should not be exposed as a production multi-tenant service without further hardening.
 
-### Integration tests
+1. **In-memory terminal session state:** `MemorySessionStore` keeps sessions and consumed launch-token identifiers in process memory. A gateway restart loses this state. It is not suitable for multiple gateway replicas.
+2. **In-memory dashboard logins:** administrator and normal-user dashboard login sessions are held in memory and are invalidated when the gateway restarts.
+3. **Local user database:** user records persist in `data/users.json`, but the current file-backed store is intended for a single local instance, not concurrent distributed writers.
+4. **Docker socket privilege:** the gateway's Docker socket access is highly privileged. The local Compose group workaround is not a production isolation boundary.
+5. **Network egress:** the internal Docker network limits direct exposure, but a DNS `SERVFAIL` observation alone does not prove complete outbound network isolation.
+6. **Test coverage:** simulated upstream tests and local manual checks are not a substitute for real multi-container adversarial testing, penetration testing, or a security audit.
+7. **Operational cleanup:** because terminal containers are created through the Docker API rather than as Compose services, operators should verify remaining managed containers during shutdown and recovery procedures.
 
-```text
-✔ launch token is consumed once and redirected without a token
-✔ two sessions remain isolated and revoking A preserves B
-ℹ tests 2
-ℹ pass 2
-ℹ fail 0
-```
+## Future enhancements
 
-### Session-expiry test
+- Replace in-memory session and replay state with Redis or another durable store using atomic operations.
+- Persist dashboard authentication sessions securely or use a dedicated identity provider.
+- Add automated end-to-end tests using multiple real Docker terminal containers.
+- Add a robust startup reconciliation process for orphaned managed containers.
+- Strengthen Docker isolation with a dedicated runtime, seccomp/AppArmor profiles, and carefully controlled egress.
+- Add HTTPS termination, secure cookie defaults, secret rotation, and centralized audit collection.
+- Add role-based permissions, configurable quotas, and administrator audit export.
+- Add monitoring and alerting for repeated authentication failures and container lifecycle errors.
 
-```text
-✔ expired sessions are denied and marked expired
-ℹ tests 1
-ℹ pass 1
-ℹ fail 0
-```
+## Troubleshooting
 
-### Syntax and packaging checks
+### Port 8080 is already in use
 
-- `npm run check`: passed.
-- `npm run package:check` in the original working directory: path verification passed, then package check correctly failed because the real `.env` file was present. The clean-copy packaging check must be run separately.
-
-### Important test-scope qualification
-
-The gateway and isolation tests use simulated upstream HTTP servers. The session-expiry test uses a simulated clock. They are valuable automated tests, but they do not prove every property of real Docker-backed sessions or substitute for a comprehensive penetration test. The live checks above were manual checks performed in the local development environment.
-
-## 17. Audit logging
-
-Audit events are written as JSON Lines to the configured `AUDIT_LOG_PATH`. Each line is an independent JSON object, which makes it easy to inspect or ingest into a log pipeline.
-
-Observed event types include:
-
-- `accepted-launch`
-- `accepted-websocket`
-- `missing-token`
-- `expired-token`
-- `replayed-token`
-- `revoked-session`
-- `session-created`
-- `session-terminated`
-- `container-start-failed`
-- `admin-operation-failed`
-
-Typical event fields include `at`, `outcome`, `method`, `path`, `remoteIp`, `reason`, `containerId`, and pseudonymous `tokenId` / `sessionId` fingerprints, depending on the event.
-
-Inspect recent event types without dumping credentials:
-
-```powershell
-Get-Content .\logs\terminal-access.jsonl |
-  ForEach-Object {
-    try { $_ | ConvertFrom-Json } catch {}
-  } |
-  Select-Object -Last 20 -Property at, outcome, method, path, reason |
-  Format-Table -AutoSize
-```
-
-The fingerprint function hashes the token with SHA-256 and retains the first 16 hexadecimal characters. A fingerprint is still a correlation identifier and should be handled as potentially sensitive metadata. Avoid logging raw launch URLs, cookies, admin keys, or complete authorization headers.
-
-Local logs may contain IP addresses, container IDs, session metadata, and access patterns. Do not include real development logs in a public repository or assignment archive.
-
-## 18. Threat model and design decisions
-
-### In scope
-
-- Unauthorized users attempting to access a terminal without a valid credential.
-- Reuse of a launch link after its one-time redemption.
-- Modified or expired token attempts.
-- Attempts to access a terminal over an unauthenticated WebSocket.
-- Accidental direct exposure of terminal container ports.
-- Accidental sharing of session targets between users.
-- Basic container privilege and resource reduction.
-- Auditing of important authentication and lifecycle events.
-
-### Assumptions
-
-- The orchestrator and gateway host are trusted.
-- The admin key and token-signing secret remain confidential.
-- Docker Engine and the host kernel are trusted.
-- TLS is provided for production browser access.
-- Learner workloads may be untrusted and should not be given access to the Docker socket or host mounts.
-
-### Out of scope / not yet proven
-
-- Full resistance to container escapes or host-kernel vulnerabilities.
-- Production-grade high availability or multi-replica session coordination.
-- Complete egress blocking verified across all protocols and IP-level paths.
-- Formal penetration testing, fuzzing, and load testing.
-- Durable revocation and replay state across gateway restarts.
-- Centralized audit retention, tamper resistance, alerting, and compliance controls.
-
-## 19. Limitations and production-hardening roadmap
-
-This is a working prototype, not a production-ready multi-tenant service. The following improvements should be addressed before deployment with untrusted users.
-
-### Priority 1: Docker privilege boundary
-
-The gateway needs Docker Engine API access to create containers. Access to the Docker socket is effectively host-administrative power. Keep it limited to a trusted component and never mount it into terminal containers. A production architecture should isolate orchestration privileges, consider a narrowly scoped container-management service, and review host-level controls.
-
-### Priority 2: Durable session and replay state
-
-`MemorySessionStore` keeps sessions and consumed launch-token IDs in process memory. A gateway restart loses this state, and multiple replicas would not share it. Use a shared store such as Redis with authenticated TLS and atomic operations before supporting multiple replicas or durable revocation.
-
-### Priority 3: Expiry cleanup and WebSocket lifecycle
-
-Authorization checks reject expired sessions, and a periodic cleanup calls `cleanupExpired()`. Validate the complete expiry lifecycle against real Docker containers, including active WebSocket closure, container removal, and behavior after gateway restarts.
-
-### Priority 4: Network egress verification
-
-The internal Compose network is configured with `internal: true`, and a DNS lookup returned `SERVFAIL` in local testing. Perform dedicated network tests for IPv4/IPv6, direct-IP connections, DNS, and access to host services before claiming complete egress isolation.
-
-### Priority 5: TLS and browser deployment
-
-Use HTTPS in production, enable `COOKIE_SECURE=true`, configure trusted origins precisely, and ensure the reverse proxy does not log launch URLs containing credentials. The default `http://localhost:8080` origin is for local development.
-
-### Priority 6: Image and command validation
-
-Pin the terminal image to a verified immutable digest, scan it, validate the `ttyd` command and non-root compatibility, and keep the image and dependencies updated.
-
-### Priority 7: Audit operations
-
-Ship JSONL events to a protected central logging system, restrict log access, define retention, monitor repeated failures, and prevent logs from becoming a source of credential or personal-data leakage.
-
-### Priority 8: Broader security validation
-
-Add live Docker end-to-end tests for expired sessions, revoked sessions, concurrent sessions, WebSocket teardown, container cleanup, restart behavior, and direct access attempts. Run dependency, configuration, and container image scans before a production release.
-
-## 20. Troubleshooting
-
-### Gateway doesn't start: signing secret is too short
-
-The gateway requires `TERMINAL_TOKEN_SECRET` and `ADMIN_KEY` to be at least 32 characters. Generate two separate random values and update `.env`. Never paste the values into chat or a public issue.
-
-### Session creation fails
-
-Check:
+Check whether Docker Compose is already running:
 
 ```powershell
 docker compose ps
-docker compose logs --tail 100 terminal-gateway
-docker network ls
-docker image ls
 ```
 
-Verify that the configured `TERMINAL_IMAGE` exists and that `TERMINAL_NETWORK` matches the actual Compose-created internal network. Review the gateway audit log for a `container-start-failed` event without publishing secrets.
+If the gateway is already running in Docker, use the browser rather than starting a second copy with `npm start`.
 
-### Browser shows “terminal authentication required”
+### Gateway is unhealthy
 
-- Create a fresh launch session.
-- Open the full launch URL directly from the returned value; don't manually copy a truncated console/table representation.
-- Launch tokens are single-use and expire quickly. Don't reuse an old link.
-- Check the browser origin and `ALLOWED_ORIGINS` configuration.
-- Review the audit event outcome, but do not paste the full launch URL or token into a report.
-
-### Terminal can't reach a writable directory
-
-The root filesystem is read-only by design. `/tmp` is provided as a restricted temporary filesystem. Do not disable read-only mode merely to make arbitrary writes succeed without considering the security trade-off.
-
-### `npm run package:check` reports `.env`
-
-This is expected in the original development directory. The check deliberately rejects `.env` and `.env.local`. Create a clean submission copy that excludes those files, local logs, and `node_modules`, then run the check from that copy. Keep `.env.example` as the safe template.
-
-### Terminal containers remain after testing
-
-Inspect project-managed containers before removing anything:
+Inspect logs:
 
 ```powershell
-docker ps -a --format "table {{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}"
+docker compose logs --tail 100 terminal-gateway
 ```
 
-Prefer revoking sessions through the authenticated admin API. Do not use broad `docker rm -f $(docker ps -aq)` commands on a machine that may host unrelated containers.
+Check that Docker Desktop is running, the required environment variables are configured, and the terminal network name matches the Compose network.
 
-## 21. Responsible use
+### Terminal container cannot start
 
-This project is intended for authorized labs, education, and controlled security testing. Do not expose the service publicly without a security review. Keep administrative credentials private, avoid distributing real audit logs, and do not run untrusted workloads on a host whose Docker control plane is accessible to the gateway without appropriate isolation.
+Check gateway logs and Docker container status:
 
----
+```powershell
+docker compose logs --tail 100 terminal-gateway
+docker ps -a
+```
 
-<div align="center">
+Confirm that the configured terminal image is available and the gateway can access the Docker Engine socket.
 
-**Secure, Authenticated Browser-Based Terminal Access**  
-*One-click lab access · Authenticated proxying · Isolated containers · Auditable sessions*
+### Administrator login fails
 
-</div>
+Confirm that the administrator account exists in the same `data/users.json` file mounted into the running container. The Compose file maps the host `./data` directory to `/app/data`.
+
+### Dashboard page is missing or returns an error
+
+Rebuild the image so the latest frontend files are copied into it:
+
+```powershell
+docker compose up -d --build terminal-gateway
+```
+
+The Dockerfile copies the `public` directory into `/app/public`.
+
+### Secret validation error
+
+Both `TERMINAL_TOKEN_SECRET` and `ADMIN_KEY` must be configured and at least 32 characters long. They must be different values.
+
+## Responsible use
+
+Use this project only in systems and environments where you have authorization to provide terminal access. Treat terminal commands as untrusted workloads. Do not expose the Docker socket, secrets, audit logs, or local user database to learners. Before using the application with real users or untrusted workloads, complete the production-hardening work described above.
